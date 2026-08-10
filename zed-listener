@@ -4,7 +4,7 @@
 Runs on the local Mac. Remote machines send requests via SSH reverse
 port forwarding to open a Zed remote project at a specific directory.
 
-Protocol: single line "host:directory\n" over TCP.
+Protocol: single line "host:path\n" over TCP, where path is an absolute file or directory.
 """
 
 import socket

@@ -13,7 +13,7 @@ You (SSH'd into my-server)
   │
   ▼
 ~/.local/bin/zed (on my-server)
-  │  Sends "my-server:/current/dir" to localhost:7682
+  │  Sends "my-server:/current/dir-or-file" to localhost:7682
   │
   ▼
 SSH Reverse Tunnel (RemoteForward 7682)
@@ -21,7 +21,7 @@ SSH Reverse Tunnel (RemoteForward 7682)
   │
   ▼
 ~/.local/bin/zed-listener (on Mac, launchd service)
-  │  Receives request, runs: zed ssh://my-server/current/dir
+  │  Receives request, runs: zed ssh://my-server/current/dir-or-file
   │
   ▼
 Zed opens with a remote SSH project at that directory
@@ -34,6 +34,7 @@ From an SSH session on your remote server:
 ```bash
 zed .           # open current directory in Zed
 zed /some/path  # open specific path in Zed
+zed file.py     # open that file directly in Zed
 zed             # same as zed .
 ```
 
@@ -43,7 +44,7 @@ zed             # same as zed .
 
 #### 1. `~/.local/bin/zed-listener`
 
-Python TCP server. Listens on port 7682 for `host:directory` messages and opens Zed remote projects.
+Python TCP server. Listens on port 7682 for `host:path` messages (absolute file or directory) and opens Zed remote projects.
 
 ```python
 #!/usr/bin/env python3
@@ -52,7 +53,7 @@ Python TCP server. Listens on port 7682 for `host:directory` messages and opens 
 Runs on the local Mac. Remote machines send requests via SSH reverse
 port forwarding to open a Zed remote project at a specific directory.
 
-Protocol: single line "host:directory\n" over TCP.
+Protocol: single line "host:path\n" over TCP, where path is an absolute file or directory.
 """
 
 import socket
@@ -137,28 +138,33 @@ Host my-server
 
 #### 4. `~/.local/bin/zed`
 
-The command you actually type. Resolves the target directory to an absolute path and sends it through the reverse tunnel via netcat.
+The command you actually type. Resolves the target (file or directory) to an absolute path and sends it through the reverse tunnel via netcat.
 
 ```bash
 #!/bin/bash
 # Open a Zed remote project on the local machine via reverse SSH tunnel.
-# Usage: zed [directory]  (defaults to current directory)
+# Usage: zed [path]  (file or directory; defaults to current directory)
 #
 # ZED_SSH_HOST must be set to the SSH config alias for this server.
 # Set it in your shell config, e.g.: export ZED_SSH_HOST="my-server"
 
-dir="${1:-.}"
-dir=$(cd "$dir" 2>/dev/null && pwd) || { echo "zed: cannot access '$1'"; exit 1; }
+target="${1:-.}"
+if [ -f "$target" ]; then
+    dir=$(cd "$(dirname "$target")" 2>/dev/null && pwd) || { echo "zed: cannot access '$1'"; exit 1; }
+    path="$dir/$(basename "$target")"
+else
+    path=$(cd "$target" 2>/dev/null && pwd) || { echo "zed: cannot access '$1'"; exit 1; }
+fi
 
 host="${ZED_SSH_HOST:-$(hostname)}"
 
-echo "${host}:${dir}" | nc -q0 127.0.0.1 7682 2>/dev/null
+echo "${host}:${path}" | nc -q0 127.0.0.1 7682 2>/dev/null
 if [ $? -ne 0 ]; then
     echo "zed: could not connect to local listener on port 7682" >&2
     echo "  Make sure zed-listener is running and SSH has RemoteForward 7682" >&2
     exit 1
 fi
-echo "Opening Zed at $dir"
+echo "Opening Zed at $path"
 ```
 
 ## Adding another server
