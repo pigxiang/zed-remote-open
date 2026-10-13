@@ -7,25 +7,80 @@ port forwarding to open a Zed remote project at a specific directory.
 Protocol: single line "host:path\n" over TCP, where path is an absolute file or directory.
 """
 
+# The launchd job runs under /usr/bin/python3, which is Python 3.9 on macOS.
+# PEP 604 unions (str | None) are 3.10+ syntax, so keep annotations lazy.
+from __future__ import annotations
+
+import os
+import shutil
+import signal
 import socket
 import subprocess
-import signal
 import sys
 
 PORT = 7682
 
+# launchd starts us with a minimal PATH, so `shutil.which` on its own is not
+# reliable: it misses Homebrew installs, and Apple Silicon puts them under
+# /opt/homebrew/bin rather than /usr/local/bin. Probe PATH first, then fall back
+# to the known install locations. Override with the ZED_CLI env var.
+ZED_CLI_FALLBACKS: tuple[str, ...] = (
+    "/opt/homebrew/bin/zed",
+    "/usr/local/bin/zed",
+    "/Applications/Zed.app/Contents/MacOS/cli",
+)
 
-def handle_request(data):
+
+def resolve_zed_cli() -> str | None:
+    """Return the path to the Zed CLI, or None if it cannot be found."""
+    override: str | None = os.environ.get("ZED_CLI")
+    if override:
+        return override
+
+    on_path: str | None = shutil.which("zed")
+    if on_path:
+        return on_path
+
+    for candidate in ZED_CLI_FALLBACKS:
+        if os.access(candidate, os.X_OK):
+            return candidate
+
+    return None
+
+
+ZED_CLI: str | None = resolve_zed_cli()
+
+
+def log(message: str) -> None:
+    """Write a diagnostic line to stderr, which the launchd job captures."""
+    print(f"zed-listener: {message}", file=sys.stderr, flush=True)
+
+
+def handle_request(data: str) -> None:
+    """Parse one request and open it as a Zed remote project."""
     data = data.strip()
     if ":" not in data:
+        log(f"ignoring malformed request (no ':'): {data!r}")
         return
+
     host, directory = data.split(":", 1)
     if not host or not directory:
+        log(f"ignoring malformed request (empty host or path): {data!r}")
         return
-    subprocess.Popen(["/usr/local/bin/zed", f"ssh://{host}{directory}"])
+
+    if ZED_CLI is None:
+        log("cannot find the Zed CLI; install Zed or set ZED_CLI in the plist")
+        return
+
+    url = f"ssh://{host}{directory}"
+    try:
+        subprocess.Popen([ZED_CLI, url])
+        log(f"opened {url}")
+    except OSError as exc:
+        log(f"failed to launch {ZED_CLI} for {url}: {exc}")
 
 
-def main():
+def main() -> None:
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -33,13 +88,20 @@ def main():
     sock.bind(("127.0.0.1", PORT))
     sock.listen(5)
 
+    log(f"listening on 127.0.0.1:{PORT}")
+    log(f"zed cli: {ZED_CLI or 'NOT FOUND'}")
+    if ZED_CLI is None:
+        log("requests will be rejected until the Zed CLI is available")
+
     while True:
         conn, _ = sock.accept()
         try:
             data = conn.recv(4096).decode("utf-8", errors="replace")
             handle_request(data)
-        except Exception:
-            pass
+        # Deliberately broad: this is a network server, so one bad connection
+        # must never take the listener down. Failures are logged, not swallowed.
+        except Exception as exc:  # noqa: BLE001
+            log(f"error while handling request: {exc!r}")
         finally:
             conn.close()
 
