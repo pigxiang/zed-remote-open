@@ -101,6 +101,10 @@ if __name__ == "__main__":
 
 Launchd service that auto-starts `zed-listener` on login and keeps it running.
 
+`__HOME__` is a placeholder that `install-local.sh` replaces with your actual home
+directory. launchd does not expand environment variables, so the absolute path
+must be baked into the plist at install time.
+
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -111,7 +115,7 @@ Launchd service that auto-starts `zed-listener` on login and keeps it running.
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/raghav/.local/bin/zed-listener</string>
+        <string>__HOME__/.local/bin/zed-listener</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -122,6 +126,16 @@ Launchd service that auto-starts `zed-listener` on login and keeps it running.
 </dict>
 </plist>
 ```
+
+## Install (local Mac)
+
+```bash
+./install-local.sh
+```
+
+This copies `zed-listener` to `~/.local/bin/`, renders the plist with your home
+directory, installs it to `~/Library/LaunchAgents/`, loads the launchd job, and
+verifies that something is actually listening on port 7682.
 
 #### 3. `~/.ssh/config` (relevant addition)
 
@@ -175,10 +189,24 @@ echo "Opening Zed at $path"
 
 ## Troubleshooting
 
+**`zed .` prints "Opening Zed at ..." but nothing opens**
+
+This is the silent failure mode: the remote `nc` connects to the reverse tunnel's
+listening socket, so it exits 0, but the final hop to `127.0.0.1:7682` on your Mac
+is refused and the request is dropped. It almost always means the launchd job is
+crash-looping (typically a wrong path in the plist).
+
+```bash
+launchctl list | grep com.zed.remote-listener   # PID column should not be "-"
+lsof -nP -iTCP:7682 -sTCP:LISTEN                # should show Python listening
+cat /tmp/zed-listener.err                       # shows the real crash reason
+```
+
 **`zed: could not connect to local listener on port 7682`**
 - Check the listener is running: `ps aux | grep zed-listener`
 - Restart it: `launchctl kickstart -k gui/$(id -u)/com.zed.remote-listener`
 - Check logs: `cat /tmp/zed-listener.err`
+- Reinstall cleanly: `./install-local.sh`
 
 **`Warning: remote port forwarding failed for listen port 7682`**
 - Harmless. Means another SSH session already has the tunnel. The existing tunnel still works.
